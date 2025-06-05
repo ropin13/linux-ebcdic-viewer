@@ -24,6 +24,7 @@ fi
 if [ "$#" -lt 2 ]; then
     echo "Usage: $0 <data_file_path> <copybook_file_path> [encoding] [page_size]"
     echo "For example: $0 data/test.dat data/test.cpy IBM037 50"
+    echo "For Chinese instructions, please see README_zh.md (中文说明请参见 README_zh.md)"
     echo ""
     echo "To run with internally generated sample data (via AppController.main):"
     echo "java -cp \"$LANTERNA_JAR:$OUT_DIR\" AppController"
