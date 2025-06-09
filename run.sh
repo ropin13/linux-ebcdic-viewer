@@ -1,15 +1,13 @@
 #!/bin/bash
 # Script to run the EBCDIC File Viewer
 
-# Define the Lanterna JAR path
-LANTERNA_JAR="lib/lanterna-3.1.1.jar"
 # Define output directory for compiled classes
 OUT_DIR="out"
 
-# Check if Lanterna JAR exists (as it's needed for runtime)
-if [ ! -f "$LANTERNA_JAR" ]; then
-    echo "Error: Lanterna JAR not found at $LANTERNA_JAR"
-    echo "Please ensure Lanterna 3.1.1 is in the 'lib' directory."
+# Check if lib directory exists and contains JAR files (as they are needed for runtime)
+if [ ! -d "lib" ] || [ -z "$(ls -A lib/*.jar 2>/dev/null)" ]; then
+    echo "Error: No JAR files found in 'lib' directory."
+    echo "Please ensure Lanterna 3.1.1 and JRecord JARs are in the 'lib' directory."
     exit 1
 fi
 
@@ -27,11 +25,11 @@ if [ "$#" -lt 2 ]; then
     echo "For Chinese instructions, please see README_zh.md (中文说明请参见 README_zh.md)"
     echo ""
     echo "To run with internally generated sample data (via AppController.main):"
-    echo "java -cp \"$LANTERNA_JAR:$OUT_DIR\" AppController"
+    echo "java -cp \"lib/*:$OUT_DIR\" AppController"
     exit 1
 fi
 
 echo "Running EBCDIC File Viewer..."
 # Pass all script arguments to the Java application
 # Quoting "$@" ensures that arguments with spaces are passed correctly
-java -cp "$LANTERNA_JAR:$OUT_DIR" EbcdicFileViewer "$@"
+java -cp "lib/*:$OUT_DIR" EbcdicFileViewer "$@"

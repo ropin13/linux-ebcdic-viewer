@@ -1,144 +1,157 @@
 import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.io.UnsupportedEncodingException;
+//import java.io.RandomAccessFile; // Removed
+//import java.io.UnsupportedEncodingException; // Removed, JRecord handles
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+// JRecord imports
+import net.sf.JRecord.JRecordInterface1;
+import net.sf.JRecord.Common.Constants;
+import net.sf.JRecord.Common.Conversion;
+import net.sf.JRecord.Details.AbstractLine;
+import net.sf.JRecord.Details.LayoutDetail;
+import net.sf.JRecord.External.CopybookLoader; // Still used in main for now, but not by PagedFileReader core
+import net.sf.JRecord.External.ExternalRecord;
+import net.sf.JRecord.External.Def.ExternalField;
+import net.sf.JRecord.IO.AbstractLineReader;
+import net.sf.JRecord.IO.CobolIoProvider;
+import net.sf.JRecord.Numeric.Convert; // For FMT_MAINFRAME etc.
+
+
 public class PagedFileReader {
 
     private String filePath;
-    private List<CopybookLoader.FieldDefinition> fieldDefinitions;
+    // private List<CopybookLoader.FieldDefinition> fieldDefinitions; // Removed
     private int pageSize; // Number of records per page
     private String ebcdicEncoding;
-    private RandomAccessFile randomAccessFile;
+    // private RandomAccessFile randomAccessFile; // Removed
+    private transient AbstractLineReader jrecordReader; // transient if we ever serialize
+    private transient LayoutDetail recordLayout;
+    private List<AbstractLine> allRecords = new ArrayList<>();
+    private String copybookFilePath;
+
     private int recordLength;
     private long totalRecords;
     private int totalPages;
     private int currentPageNumber;
-    private List<Map<String, String>> currentPageRawData; // Added to store current page
+    private List<Map<String, String>> currentPageRawData;
 
-    public PagedFileReader(String filePath, List<CopybookLoader.FieldDefinition> fieldDefinitions, int pageSize, String ebcdicEncoding) throws IOException {
+    public PagedFileReader(String filePath, String copybookFilePath, int pageSize, String ebcdicEncoding) throws IOException {
         this.filePath = filePath;
-        this.currentPageRawData = new ArrayList<>(); // Initialize
-        this.fieldDefinitions = fieldDefinitions;
+        this.copybookFilePath = copybookFilePath;
         this.pageSize = pageSize;
         this.ebcdicEncoding = ebcdicEncoding;
+        this.currentPageRawData = new ArrayList<>();
         this.currentPageNumber = -1; // No page loaded initially
 
-        if (fieldDefinitions == null || fieldDefinitions.isEmpty()) {
-            throw new IllegalArgumentException("Field definitions cannot be null or empty.");
-        }
-
-        this.recordLength = calculateRecordLength();
-
+        // CobolIoProvider ioProvider = CobolIoProvider.getInstance(); // Not directly used for reader creation if using JRecordInterface1
         try {
-            this.randomAccessFile = new RandomAccessFile(filePath, "r"); // "r" for read-only
-            long fileLength = this.randomAccessFile.length();
-            if (this.recordLength == 0 && fileLength > 0) {
-                 throw new IllegalArgumentException("Record length is zero, cannot process non-empty file.");
-            } else if (this.recordLength == 0 && fileLength == 0) {
-                this.totalRecords = 0;
-                this.totalPages = 0;
+            // Load copybook to get layout details (especially record length)
+            ExternalRecord externalRecord = JRecordInterface1.COBOL.newIOBuilder(copybookFilePath)
+                                                 .setFont(ebcdicEncoding) // Set font for copybook interpretation
+                                                 .getExternalRecord(); // Changed from .load()
+            this.recordLayout = externalRecord.asLayoutDetail();
+            this.recordLength = this.recordLayout.getMaximumRecordLength(); // Changed from getRecordLength()
+
+            if (this.recordLength <= 0) {
+                throw new IOException("Record length is zero or invalid, cannot process file. Check copybook and encoding: " + this.recordLength);
+            }
+
+            // Calculate totalRecords based on file length and record length
+            java.io.File file = new java.io.File(filePath);
+            long fileLength = file.length();
+
+            long calculatedTotalRecords; // Use a temporary variable for clarity
+            if (fileLength == 0) {
+                calculatedTotalRecords = 0;
             } else if (fileLength % this.recordLength != 0) {
                 System.err.println("Warning: File length " + fileLength + " is not an exact multiple of record length " + this.recordLength);
-                // Potentially handle this as an error or allow partial last record processing if needed
-                this.totalRecords = fileLength / this.recordLength; // Integer division gives complete records
+                calculatedTotalRecords = fileLength / this.recordLength; // Integer division
             } else {
-                this.totalRecords = fileLength / this.recordLength;
+                calculatedTotalRecords = fileLength / this.recordLength;
             }
+
+            if (calculatedTotalRecords > 0) {
+                 // Create reader with encoding for data file
+                this.jrecordReader = JRecordInterface1.COBOL.newIOBuilder(copybookFilePath)
+                                                            .setFont(ebcdicEncoding) // Font for data interpretation
+                                                            .newReader(filePath);
+                // No need for setLayoutFont on reader if IOBuilder sets it
+
+                // Load all records into memory
+                AbstractLine line;
+                while ((line = this.jrecordReader.read()) != null) {
+                    allRecords.add(line);
+                }
+                // Update totalRecords based on actual records read, as file length calculation might be off for some complex files
+                this.totalRecords = allRecords.size();
+            } else {
+                this.totalRecords = 0; // Ensure consistency if file was empty or only header
+            }
+
 
             if (this.totalRecords == 0) {
                 this.totalPages = 0;
             } else {
-                this.totalPages = (int) Math.ceil((double) totalRecords / pageSize);
+                this.totalPages = (int) Math.ceil((double) this.totalRecords / this.pageSize);
             }
 
-        } catch (IOException e) {
-            System.err.println("Error opening or reading file: " + filePath + " - " + e.getMessage());
-            throw e; // Re-throw to inform the caller
+        } catch (Exception e) { // Catch generic Exception from JRecord loading
+            throw new IOException("Error initializing JRecord reader: " + e.getMessage(), e);
+        } finally {
+            if (jrecordReader != null) {
+                try {
+                    jrecordReader.close(); // Close after initial load, will reopen if needed or handle differently
+                } catch (IOException e) {
+                    System.err.println("Error closing JRecord reader during initialization: " + e.getMessage());
+                }
+            }
         }
     }
 
-    private int calculateRecordLength() {
-        int length = 0;
-        if (fieldDefinitions != null) {
-            for (CopybookLoader.FieldDefinition field : fieldDefinitions) {
-                length += field.getLength();
-            }
-        }
-        return length;
-    }
+    // Removed calculateRecordLength()
 
     public List<Map<String, String>> getPage(int pageNumber) throws IOException {
-        if (pageNumber < 0 || pageNumber >= totalPages) {
-            // Or throw IllegalArgumentException
-            System.err.println("Invalid page number: " + pageNumber + ". Total pages: " + totalPages);
-            return new ArrayList<>(); // Return empty list for invalid page
+        if (allRecords.isEmpty()) {
+            this.currentPageNumber = -1;
+            this.currentPageRawData = new ArrayList<>();
+            return this.currentPageRawData;
         }
-        if (recordLength == 0 && totalRecords == 0) { // Handle empty file
+
+        if (pageNumber < 0 || pageNumber >= totalPages) {
+            System.err.println("Invalid page number: " + pageNumber + ". Total pages: " + totalPages);
+            // Optionally, return current page or throw exception
+            if (currentPageNumber != -1 && currentPageNumber < totalPages) { // return last valid page
+                 return this.currentPageRawData; // or an empty list: new ArrayList<>()
+            }
             return new ArrayList<>();
         }
 
-
         List<Map<String, String>> pageData = new ArrayList<>();
-        long startBytePosition = (long) pageNumber * pageSize * recordLength;
-        randomAccessFile.seek(startBytePosition);
+        int startRecordIndex = pageNumber * pageSize;
+        int endRecordIndex = Math.min(startRecordIndex + pageSize, allRecords.size());
 
-        byte[] recordBuffer = new byte[recordLength];
-        int recordsToRead = pageSize;
-        if (pageNumber == totalPages - 1) { // Last page might have fewer records
-            recordsToRead = (int) (totalRecords - ((long)pageNumber * pageSize));
-        }
-
-
-        for (int i = 0; i < recordsToRead; i++) {
-            int bytesRead = randomAccessFile.read(recordBuffer);
-            if (bytesRead == -1) { // End of file reached unexpectedly
-                break;
-            }
-            if (bytesRead < recordLength) {
-                System.err.println("Warning: Incomplete record read at record index " + (pageNumber * pageSize + i) + ". Expected " + recordLength + " bytes, got " + bytesRead);
-                // Optionally, pad or skip this record
-                continue;
-            }
-
+        for (int i = startRecordIndex; i < endRecordIndex; i++) {
+            AbstractLine line = allRecords.get(i);
             Map<String, String> recordMap = new HashMap<>();
-            try {
-                for (CopybookLoader.FieldDefinition field : fieldDefinitions) {
-                    // Field start positions are 1-based in copybook, adjust to 0-based for array
-                    int fieldStartInRecord = field.getStartPosition() - 1;
-                    int fieldLength = field.getLength();
-
-                    if (fieldStartInRecord + fieldLength > recordBuffer.length) {
-                         System.err.println("Error: Field " + field.getName() + " definition exceeds record buffer length. Skipping field.");
-                         recordMap.put(field.getName(), "ERROR_FIELD_OUT_OF_BOUNDS");
-                         continue;
-                    }
-
-                    byte[] fieldBytes = new byte[fieldLength];
-                    System.arraycopy(recordBuffer, fieldStartInRecord, fieldBytes, 0, fieldLength);
-                    String decodedString = new String(fieldBytes, ebcdicEncoding);
-                    // Sanitize the string: replace control characters (0x00-0x1F, 0x7F-0x9F) with a placeholder like '.'
-                    // This regex matches most C0 and C1 control characters.
-                    // For simplicity, replacing with "." If specific behavior for specific control chars is needed,
-                    // this logic would be more complex.
-                    String sanitizedString = decodedString.replaceAll("\\p{Cntrl}", ".");
-                    recordMap.put(field.getName(), sanitizedString);
+            for (net.sf.JRecord.Common.FieldDetail field : recordLayout.getRecord(0).getFields()) { // Changed ExternalField to FieldDetail
+                String fieldName = field.getName();
+                String fieldValue = "";
+                try {
+                    fieldValue = line.getFieldValue(field).asString(); // Pass FieldDetail object
+                } catch (Exception e) {
+                    System.err.println("Error getting field value for: " + fieldName + " - " + e.getMessage());
+                    fieldValue = "ERROR_READING_FIELD";
                 }
-            } catch (UnsupportedEncodingException e) {
-                // 'field' is not in scope here.
-                System.err.println("Error decoding EBCDIC field during record processing: " + e.getMessage());
-                // Put a placeholder or handle error as required
-                // To associate with a specific field, the try-catch would need to be inside the loop.
-                // For now, a general error for the record is placed.
-                recordMap.put("RECORD_DECODING_ERROR", "A field in this record failed EBCDIC decoding: " + e.getMessage());
+                String sanitizedString = fieldValue.replaceAll("\\p{Cntrl}", ".");
+                recordMap.put(fieldName, sanitizedString);
             }
             pageData.add(recordMap);
         }
         this.currentPageNumber = pageNumber;
-        this.currentPageRawData = pageData; // Store the loaded page data
+        this.currentPageRawData = pageData;
         return pageData;
     }
 
@@ -155,14 +168,16 @@ public class PagedFileReader {
         if (currentPageNumber < totalPages - 1) {
             return getPage(currentPageNumber + 1);
         }
-        return null; // Or throw exception, or return current page if already at last
+        // Already on the last page or no pages, return current (which might be empty or last page's data)
+        return this.currentPageRawData;
     }
 
     public List<Map<String, String>> previousPage() throws IOException {
         if (currentPageNumber > 0) {
             return getPage(currentPageNumber - 1);
         }
-        return null; // Or throw exception, or return current page if already at first
+        // Already on the first page or no pages, return current (which might be empty or first page's data)
+        return this.currentPageRawData;
     }
 
     public int getCurrentPageNumber() {
@@ -174,40 +189,38 @@ public class PagedFileReader {
     }
 
     public long getTotalRecords() {
-        return totalRecords;
+        return this.totalRecords; // Derived from allRecords.size() in constructor
     }
 
     public int getRecordLength() {
         return recordLength;
     }
 
+    public net.sf.JRecord.Details.LayoutDetail getRecordLayout() {
+        return this.recordLayout;
+    }
+
     public void close() throws IOException {
-        if (randomAccessFile != null) {
-            randomAccessFile.close();
-        }
+        // jrecordReader is closed after initial load in the constructor.
+        // If it were to be kept open for specific scenarios, closing logic would be here.
+        // For now, allRecords holds the data, so no file handle is open post-constructor.
     }
 
     // Main method for basic testing (requires a sample EBCDIC file and copybook)
     public static void main(String[] args) {
-        // This is a placeholder for testing.
-        // Actual testing requires a .cpy file and a corresponding EBCDIC data file.
-        System.out.println("PagedFileReader.java compiled. To test, create a sample EBCDIC data file and a copybook.");
-        System.out.println("Then, instantiate CopybookLoader, load definitions, then instantiate PagedFileReader.");
-        System.out.println("Example (pseudo-code):");
-        System.out.println("  CopybookLoader cbl = new CopybookLoader(\"test.cpy\");");
-        System.out.println("  List<FieldDefinition> defs = cbl.getFieldDefinitions();");
-        System.out.println("  if(defs.isEmpty()) { System.out.println(\"No defs in copybook\"); return; }");
+        System.out.println("PagedFileReader.java using JRecord. To test, ensure test.cpy and test.dat exist.");
+        System.out.println("Example usage:");
         System.out.println("  try {");
-        System.out.println("    PagedFileReader pfr = new PagedFileReader(\"test.dat\", defs, 10, \"CP037\");");
+        System.out.println("    PagedFileReader pfr = new PagedFileReader(\"test.dat\", \"test.cpy\", 10, \"CP037\");");
         System.out.println("    System.out.println(\"Total records: \" + pfr.getTotalRecords());");
         System.out.println("    System.out.println(\"Total pages: \" + pfr.getTotalPages());");
-        System.out.println("    List<Map<String, String>> page0 = pfr.getPage(0);");
-        System.out.println("    // Print page0 data");
+        System.out.println("    if (pfr.getTotalPages() > 0) {");
+        System.out.println("      List<Map<String, String>> page0 = pfr.getPage(0);");
+        System.out.println("      // Print page0 data, e.g., page0.forEach(System.out::println);");
+        System.out.println("    }");
         System.out.println("    pfr.close();");
         System.out.println("  } catch (IOException e) { e.printStackTrace(); }");
 
-
-        // Create dummy files for testing if they don't exist
         String copybookFilePath = "test.cpy";
         String dataFilePath = "test.dat";
 
@@ -224,37 +237,39 @@ public class PagedFileReader {
 
             java.io.File datFile = new java.io.File(dataFilePath);
             if (!datFile.exists()) {
-                 System.out.println("Creating dummy " + dataFilePath + " for basic compilation test (will be empty or have minimal data)...");
-                // For a real test, this file should contain EBCDIC encoded data
-                // For this dummy test, we can leave it empty or add some sample bytes.
-                // Adding simple ASCII for placeholder, won't decode correctly but allows file operations.
+                 System.out.println("Creating dummy " + dataFilePath + " for basic compilation test...");
                 try (java.io.FileOutputStream fos = new java.io.FileOutputStream(dataFilePath)) {
-                    // Record 1: NAME="AAAAAAAAAA", VALUE="BBBBB" (15 bytes)
-                    // Record 2: NAME="CCCCCCCCCC", VALUE="DDDDD" (15 bytes)
-                    // This is NOT EBCDIC. CP037 would be different byte values.
-                    fos.write("AAAAAAAAAABBBBB".getBytes("ASCII"));
-                    fos.write("CCCCCCCCCCDDDDD".getBytes("ASCII"));
+                    // EBCDIC for "AAAAAAAAAABBBBB" (CP037) - Approximate, actual bytes depend on exact EBCDIC variant.
+                    // This is a placeholder. Real EBCDIC data needed for full test.
+                    byte[] rec1 = {(byte)0xC1,(byte)0xC1,(byte)0xC1,(byte)0xC1,(byte)0xC1,(byte)0xC1,(byte)0xC1,(byte)0xC1,(byte)0xC1,(byte)0xC1, (byte)0xC2,(byte)0xC2,(byte)0xC2,(byte)0xC2,(byte)0xC2}; // AAAAABBBBB
+                    byte[] rec2 = {(byte)0xC3,(byte)0xC3,(byte)0xC3,(byte)0xC3,(byte)0xC3,(byte)0xC3,(byte)0xC3,(byte)0xC3,(byte)0xC3,(byte)0xC3, (byte)0xC4,(byte)0xC4,(byte)0xC4,(byte)0xC4,(byte)0xC4}; // CCCCCDDDDD
+                    if (rec1.length == 15 && rec2.length == 15) { // Assuming record length 15 from dummy cpy
+                         fos.write(rec1);
+                         fos.write(rec2);
+                    } else {
+                        System.err.println("Dummy EBCDIC byte array length mismatch, check dummy data generation.");
+                    }
                 }
             }
-            System.out.println("\n--- Running Test with Dummy Files ---");
-            CopybookLoader cbl = new CopybookLoader(copybookFilePath);
-            List<CopybookLoader.FieldDefinition> defs = cbl.getFieldDefinitions();
-            if(defs.isEmpty()){
-                System.out.println("Copybook parsing failed or is empty. Check " + copybookFilePath);
-                return;
+            System.out.println("\n--- Running Test with Dummy Files (JRecord) ---");
+
+            // Informational: Load with JRecord to show expected record length
+            try {
+                ExternalRecord extRecInfo = JRecordInterface1.COBOL.newIOBuilder(copybookFilePath).getExternalRecord();
+                System.out.println("Record length from JRecord for info: " + extRecInfo.asLayoutDetail().getMaximumRecordLength());
+            } catch (Exception e) {
+                System.out.println("Error using JRecord to get copybook info for main method: " + e.getMessage());
             }
-            System.out.println("Record length from copybook: " + cbl.getFieldDefinitions().stream().mapToInt(CopybookLoader.FieldDefinition::getLength).sum());
 
-
-            PagedFileReader pfr = new PagedFileReader(dataFilePath, defs, 1, "CP037"); // Page size 1 for easier testing
-            System.out.println("Total records: " + pfr.getTotalRecords());
-            System.out.println("Total pages: " + pfr.getTotalPages());
-            System.out.println("Calculated Record Length: " + pfr.getRecordLength());
+            PagedFileReader pfr = new PagedFileReader(dataFilePath, copybookFilePath, 1, "CP037"); // Page size 1
+            System.out.println("Total records (JRecord): " + pfr.getTotalRecords());
+            System.out.println("Total pages (JRecord): " + pfr.getTotalPages());
+            System.out.println("Record Length (JRecord): " + pfr.getRecordLength());
 
 
             if (pfr.getTotalPages() > 0) {
                 List<Map<String, String>> page0 = pfr.getPage(0);
-                System.out.println("\nPage 0 Data (first record if exists):");
+                System.out.println("\nPage 0 Data (JRecord - first record if exists):");
                 if (!page0.isEmpty()) {
                     System.out.println(page0.get(0));
                 } else {
@@ -262,26 +277,22 @@ public class PagedFileReader {
                 }
                  if (pfr.getTotalPages() > 1) {
                     List<Map<String, String>> page1 = pfr.nextPage();
-                     System.out.println("\nPage 1 Data (first record if exists):");
+                     System.out.println("\nPage 1 Data (JRecord - first record if exists):");
                     if (page1 != null && !page1.isEmpty()) {
                          System.out.println(page1.get(0));
                     } else {
                         System.out.println("Page 1 is empty or could not be loaded.");
                     }
                 }
-
-
             } else {
                 System.out.println("No pages to display as totalPages is 0.");
             }
             pfr.close();
-            System.out.println("\n--- Test with Dummy Files Finished ---");
-
+            System.out.println("\n--- Test with Dummy Files (JRecord) Finished ---");
 
         } catch (IOException e) {
-            System.err.println("Error during dummy file test setup or PagedFileReader execution: " + e.getMessage());
+            System.err.println("Error during JRecord dummy file test setup or PagedFileReader execution: " + e.getMessage());
             e.printStackTrace();
         }
-
     }
 }
