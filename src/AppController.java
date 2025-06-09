@@ -3,8 +3,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+// JRecord classes for LayoutDetail and FieldDetail
+import net.sf.JRecord.Details.LayoutDetail;
+import net.sf.JRecord.Common.FieldDetail;
+
 public class AppController {
-    private CopybookLoader copybookLoader;
+    // private CopybookLoader copybookLoader; // Removed
     private PagedFileReader pagedFileReader;
     private SearchManager searchManager;
     private TUIView tuiView;
@@ -29,24 +33,32 @@ public class AppController {
         this.tuiView = new TUIView(this);
 
         try {
-            this.copybookLoader = new CopybookLoader(copybookFilePath);
-            if (copybookLoader.getFieldDefinitions() == null || copybookLoader.getFieldDefinitions().isEmpty()) {
-                System.err.println("Error: No field definitions loaded from copybook: " + copybookFilePath);
-                // Attempt to show error in TUI if available, then exit.
+            // Initialize PagedFileReader first
+            this.pagedFileReader = new PagedFileReader(dataFilePath, copybookFilePath, pageSize, encoding);
+            this.searchManager = new SearchManager();
+
+            // Get layout and field names from PagedFileReader
+            LayoutDetail layout = pagedFileReader.getRecordLayout();
+            if (layout == null || layout.getRecordCount() == 0 || layout.getRecord(0).getFieldCount() == 0) {
+                // Handle error: No fields defined by JRecord from the copybook
+                String errorMessage = "Fatal Error: JRecord could not find field definitions in copybook: " + copybookFilePath + ". Application will exit.";
+                System.err.println(errorMessage);
                 if (this.tuiView != null) {
-                    this.tuiView.init(new ArrayList<>()); // Pass empty list
-                    this.tuiView.displayError("Fatal Error: No field definitions loaded from copybook: " + copybookFilePath + ". Application will exit.");
+                    this.tuiView.init(new ArrayList<>()); // Pass empty list for field names
+                    this.tuiView.displayError(errorMessage);
                     try { Thread.sleep(4000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
                     this.tuiView.close();
                 }
                 System.exit(1);
-                return;
+                return; // Important to prevent further execution
             }
-
-            this.pagedFileReader = new PagedFileReader(dataFilePath, copybookLoader.getFieldDefinitions(), pageSize, encoding);
-            this.searchManager = new SearchManager();
-
-            this.tuiView.init(copybookLoader.getFieldDefinitions());
+            // Extract field names for TUIView
+            List<String> fieldNames = new ArrayList<>();
+            for (FieldDetail fieldDetail : layout.getRecord(0).getFields()) {
+                fieldNames.add(fieldDetail.getName());
+            }
+            // Pass the List<String> of field names to TUIView's init method.
+            this.tuiView.init(fieldNames);
 
         } catch (IOException e) {
             System.err.println("Error initializing application components: " + e.getMessage());

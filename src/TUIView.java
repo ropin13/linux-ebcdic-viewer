@@ -40,7 +40,7 @@ public class TUIView {
     private Screen screen;
     private WindowBasedTextGUI textGUI;
     private AppController appController;
-    private List<CopybookLoader.FieldDefinition> fieldDefinitions;
+    private List<String> fieldNames; // Changed from List<CopybookLoader.FieldDefinition>
     private BasicWindow window;
     private Panel mainPanel;
     private Label statusLabel;
@@ -111,9 +111,9 @@ public class TUIView {
         }
     }
 
-    public void init(List<CopybookLoader.FieldDefinition> fieldDefs) {
-        this.fieldDefinitions = fieldDefs;
-        if (fieldDefs == null || fieldDefs.isEmpty()) {
+    public void init(List<String> fieldNames) { // Signature changed
+        this.fieldNames = fieldNames; // Changed from fieldDefs
+        if (fieldNames == null || fieldNames.isEmpty()) { // Changed from fieldDefs
             // Display a message if no field definitions are available
             // This could happen if copybook parsing failed or copybook was empty
             displayError("No field definitions loaded. Cannot display data.");
@@ -125,7 +125,7 @@ public class TUIView {
     }
 
     public void displayData(List<Map<String, String>> pageData, int currentPage, int totalPages, long totalRecords, String encoding, String currentStatusMessage) {
-        if (this.fieldDefinitions == null || this.fieldDefinitions.isEmpty()) {
+        if (this.fieldNames == null || this.fieldNames.isEmpty()) { // Changed from fieldDefinitions
             statusLabel.setText("Status: No field definitions. Cannot display page.");
             tablePanel.removeAllComponents(); // Clear any previous table
             // Optionally, add a label to tablePanel indicating the issue
@@ -154,18 +154,18 @@ public class TUIView {
             // This is a very basic way to do it, a more robust Table component from Lanterna extensions or a custom one would be better.
 
             // Create a basic grid-like layout for the table
-            Panel gridPanel = new Panel(new GridLayout(fieldDefinitions.size()));
+            Panel gridPanel = new Panel(new GridLayout(this.fieldNames.size())); // Changed from fieldDefinitions
             gridPanel.addComponent(new EmptySpace(new TerminalSize(0,0))); // Top-left empty cell if needed for borders
 
             // Add headers
-            for (CopybookLoader.FieldDefinition fieldDef : fieldDefinitions) {
-                gridPanel.addComponent(new Label(fieldDef.getName()).addStyle(com.googlecode.lanterna.SGR.BOLD));
+            for (String fieldName : this.fieldNames) { // Changed from fieldDefinitions
+                gridPanel.addComponent(new Label(fieldName).addStyle(com.googlecode.lanterna.SGR.BOLD));
             }
 
             // Add data rows
             for (Map<String, String> record : pageData) {
-                for (CopybookLoader.FieldDefinition fieldDef : fieldDefinitions) {
-                    String value = record.get(fieldDef.getName());
+                for (String fieldName : this.fieldNames) { // Changed from fieldDefinitions
+                    String value = record.get(fieldName); // Use fieldName directly
                     gridPanel.addComponent(new Label(value != null ? value : ""));
                 }
             }
@@ -268,18 +268,16 @@ public class TUIView {
 
 
     private void promptForSearch() {
-        if (fieldDefinitions == null || fieldDefinitions.isEmpty()) {
+        if (this.fieldNames == null || this.fieldNames.isEmpty()) { // Changed from fieldDefinitions
             MessageDialog.showMessageDialog(textGUI, "Search Error", "No fields available to search.");
             return;
         }
 
         // Create a list of field names for the user to choose from
-        List<String> fieldNames = fieldDefinitions.stream()
-                                                .map(CopybookLoader.FieldDefinition::getName)
-                                                .collect(Collectors.toList());
+        List<String> fieldNamesForPrompt = new ArrayList<>(this.fieldNames); // Use this.fieldNames
 
-        String fieldListForPrompt = "Available fields: " + String.join(", ", fieldNames);
-        if (fieldNames.isEmpty()) {
+        String fieldListForPrompt = "Available fields: " + String.join(", ", fieldNamesForPrompt);
+        if (fieldNamesForPrompt.isEmpty()) { // Check the local list
             fieldListForPrompt = "No searchable fields defined.";
         }
 
@@ -288,12 +286,12 @@ public class TUIView {
                 .setTitle("Search Field")
                 .setDescription(fieldListForPrompt)
                 .setTextBoxSize(new TerminalSize(30,1))
-                .setInitialContent(fieldNames.isEmpty() ? "" : fieldNames.get(0))
+                .setInitialContent(fieldNamesForPrompt.isEmpty() ? "" : fieldNamesForPrompt.get(0)) // Use local list
                 .setValidator((text) -> {
                     if (text == null || text.trim().isEmpty()) {
                         return "Field name cannot be empty.";
                     }
-                    if (fieldNames.isEmpty() || !fieldNames.contains(text.trim())) {
+                    if (fieldNamesForPrompt.isEmpty() || !fieldNamesForPrompt.contains(text.trim())) { // Use local list
                         return "Invalid field. Please choose from list above.";
                     }
                     return null;
